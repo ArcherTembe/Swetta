@@ -887,6 +887,7 @@
           .eq("id", id);
         if (result.error) return toast(result.error.message);
         await loadFriends();
+        await loadCircle();
         toast("Friend removed");
       }
       async function submitFriendRequest() {
