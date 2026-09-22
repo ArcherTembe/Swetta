@@ -518,6 +518,14 @@
                 <i data-lucide="send" class="h-4 w-4"></i>
               </button>
             </div>
+            <button
+              id="clearChatButton"
+              class="ghost mt-3 w-full text-[#ba7474]"
+              onclick="clearChat()"
+            >
+              <i data-lucide="trash-2" class="mr-2 inline h-4 w-4"></i>
+              Clear this chat for both sides
+            </button>
           </article>
           <article class="card p-7 sm:p-8">
             <p
@@ -788,31 +796,32 @@
       }
       async function addFriend() {
         if (!requireSession() || !isSwetta) return;
-        const label = $("friendLabel").value.trim() || "Close friend",
-          email = $("friendEmail").value.trim().toLowerCase();
+
+        const label = $("friendLabel").value.trim() || "Close friend";
+        const email = $("friendEmail").value.trim().toLowerCase();
+
         if (!email) return toast("Add an email address");
         if (!/^\S+@\S+\.\S+$/.test(email))
           return toast("Enter a valid email address");
-        if (email === SWETTA_EMAIL) return toast("Swetta is already the owner");
-        let result = await supabaseClient.rpc("add_close_friend", {
+        if (email === SWETTA_EMAIL)
+          return toast("Swetta is already the owner");
+
+        const result = await supabaseClient.rpc("add_close_friend", {
           friend_email: email,
           friend_label: label,
         });
-        if (
-          result.error &&
-          result.error.code === "23502" &&
-          /phone/i.test(result.error.message)
-        )
-          result = await supabaseClient
-            .from("close_friends")
-            .insert({ label, email, phone: email });
-        if (result.error) {
-          toast(result.error.message);
-          return;
-        }
+
+        if (result.error) return toast(result.error.message);
+
         $("friendLabel").value = "";
         $("friendEmail").value = "";
-        await loadFriends();
+
+        await Promise.all([
+          loadFriends(),
+          loadCircle(),
+          loadMessageRecipients(),
+        ]);
+
         toast("Close friend added");
       }
       async function avatarUrl(path) {
@@ -823,89 +832,77 @@
         return result.data?.signedUrl || "";
       }
       async function loadFriends() {
-        if (!requireSession()) return;
-        let directory = await supabaseClient.rpc("close_friend_directory");
-        let friends = directory.data || [];
-        if (directory.error) {
-          const direct = await supabaseClient
-            .from("close_friends")
-            .select("*")
-            .order("created_at");
-          if (!direct.error) {
-            friends = direct.data || [];
-            directory = { error: null };
-          }
-        }
-        if (!friends.length) {
-          const legacy = await supabaseClient
-            .from("contacts")
-            .select("id,name,email,created_at")
-            .order("created_at");
-          if (!legacy.error)
-            friends = (legacy.data || [])
-              .filter((contact) => contact.email)
-              .map((contact) => ({
-                id: contact.id,
-                label: contact.name || "Close friend",
-                email: contact.email,
-                created_at: contact.created_at,
-                display_name: contact.name || "Close friend",
-                legacy: true,
-              }));
-          else if (directory.error) return toast(directory.error.message);
-        }
-        const profiles = await supabaseClient
-          .from("profiles")
-          .select("id,display_name,avatar_path");
+        if (!requireSession() || !isSwetta) return;
+
+        const result = await supabaseClient.rpc("close_friend_directory");
+        if (result.error) return toast(result.error.message);
+
+        const friends = result.data || [];
         const cards = await Promise.all(
           friends.map(async (friend) => {
-            const profile = (profiles.data || []).find(
-              (person) =>
-                person.display_name === friend.label ||
-                person.id === friend.user_id,
-            );
-            const name =
-              friend.display_name ||
-              profile?.display_name ||
-              friend.label ||
-              "Close friend";
-            const image = await avatarUrl(
-              friend.avatar_path || profile?.avatar_path,
-            );
-            return `<div class="flex items-center justify-between rounded-xl bg-[#f3f6f2] px-3 py-2 text-sm"><span class="flex items-center gap-3">${image ? `<img class="avatar h-9 w-9 object-cover" src="${image}" alt="">` : `<span class="avatar h-9 w-9 text-xs">${initials(name)}</span>`}<span><b>${esc(name)}</b></span></span><button class="text-[#ba7474]" onclick="removeFriend('${friend.id}',${Boolean(friend.legacy)})" aria-label="Remove ${esc(name)}"><i data-lucide="x" class="h-4 w-4"></i></button></div>`;
+            const name = friend.display_name || friend.label || "Close friend";
+            const image = await avatarUrl(friend.avatar_path);
+
+            return `<div class="flex items-center justify-between rounded-xl bg-[#f3f6f2] px-3 py-2 text-sm">
+              <span class="flex items-center gap-3">
+                ${
+                  image
+                    ? `<img class="avatar h-9 w-9 object-cover" src="${image}" alt="">`
+                    : `<span class="avatar h-9 w-9 text-xs">${initials(name)}</span>`
+                }
+                <span><b>${esc(name)}</b></span>
+              </span>
+              <button class="text-[#ba7474]" onclick="removeFriend('${friend.id}')" aria-label="Remove ${esc(name)}">
+                <i data-lucide="x" class="h-4 w-4"></i>
+              </button>
+            </div>`;
           }),
         );
+
         $("friendAdmin").classList.remove("hidden");
-        $("friendList").innerHTML = cards.join("");
+        $("friendList").innerHTML =
+          cards.join("") ||
+          '<p class="text-sm text-[#899692]">No close friends yet.</p>';
+
         lucide.createIcons();
       }
-      async function removeFriend(id, legacy = false) {
+      async function removeFriend(id) {
         if (!requireSession() || !isSwetta) return;
+
         const result = await supabaseClient
-          .from(legacy ? "contacts" : "close_friends")
+          .from("close_friends")
           .delete()
           .eq("id", id);
+
         if (result.error) return toast(result.error.message);
-        await loadFriends();
-        await loadCircle();
+
+        await Promise.all([
+          loadFriends(),
+          loadCircle(),
+          loadMessageRecipients(),
+        ]);
+
         toast("Friend removed");
       }
       async function submitFriendRequest() {
         if (!requireSession() || isSwetta) return;
-        const message = $("requestMessage").value.trim(),
-          errorBox = $("requestError"),
-          email = (user.email || "").trim().toLowerCase();
+
+        const message = $("requestMessage").value.trim();
+        const errorBox = $("requestError");
+        const email = (user.email || "").trim().toLowerCase();
+
         if (!email) return;
-        let result = await supabaseClient
+
+        errorBox.classList.add("hidden");
+
+        const result = await supabaseClient
           .from("friend_requests")
-          .insert({ requester_id: user.id, email, phone: email, message });
-        if (
-          result.error &&
-          /phone|schema cache|column/i.test(result.error.message)
-        )
-          result = await supabaseClient
-            .from("friend_requests")
-            .insert({ requester_id: user.id, email, message });
+          .insert({
+            requester_id: user.id,
+            email,
+            message,
+          });
+
         if (result.error) {
           errorBox.textContent =
             result.error.code === "23505"
@@ -914,92 +911,62 @@
           errorBox.classList.remove("hidden");
           return;
         }
+
         errorBox.textContent = "Request sent. Swetta will review it.";
         errorBox.classList.remove("hidden");
         $("requestMessage").disabled = true;
       }
+
       async function loadFriendRequests() {
         if (!requireSession() || !isSwetta) return;
-        let result = await supabaseClient.rpc("pending_friend_requests");
-        if (isMissingRpc(result.error)) {
-          const direct = await supabaseClient
-            .from("friend_requests")
-            .select("*")
-            .eq("status", "pending")
-            .order("created_at");
-          if (direct.error) return toast(direct.error.message);
-          const profiles = await supabaseClient
-            .from("profiles")
-            .select("id,display_name");
-          const names = new Map(
-            (profiles.data || []).map((person) => [
-              person.id,
-              person.display_name,
-            ]),
-          );
-          result = {
-            data: (direct.data || []).map((request) => ({
-              ...request,
-              display_name: names.get(request.requester_id) || "Friend",
-            })),
-            error: null,
-          };
-        }
+
+        const result = await supabaseClient.rpc("pending_friend_requests");
         if (result.error) return toast(result.error.message);
+
         const requests = $("friendRequests");
-        requests.innerHTML = result.data?.length
+        const data = result.data || [];
+
+        requests.innerHTML = data.length
           ? '<p class="mb-2 text-xs font-bold uppercase tracking-[.14em] text-[#71827d]">Requests</p>'
           : "";
-        requests.innerHTML += (result.data || [])
+
+        requests.innerHTML += data
           .map(
             (request) =>
-              `<div class="rounded-xl bg-[#f3f6f2] p-3 text-sm"><p class="font-semibold">${esc(request.display_name || "Friend")}</p><p class="mt-1 text-[#71827d]">${esc(request.message || "No note")}</p><div class="mt-2 flex gap-2"><button class="primary !px-3 !py-2 text-xs" onclick="respondToFriendRequest('${request.id}')">Accept</button><button class="ghost !px-3 !py-2 text-xs" onclick="declineFriendRequest('${request.id}')">Decline</button></div></div>`,
+              `<div class="rounded-xl bg-[#f3f6f2] p-3 text-sm">
+                <p class="font-semibold">${esc(request.display_name || "Friend")}</p>
+                <p class="mt-1 text-[#71827d]">${esc(request.email || "")}</p>
+                <p class="mt-1 text-[#71827d]">${esc(request.message || "No note")}</p>
+                <div class="mt-2 flex gap-2">
+                  <button class="primary !px-3 !py-2 text-xs" onclick="respondToFriendRequest('${request.id}')">Accept</button>
+                  <button class="ghost !px-3 !py-2 text-xs" onclick="declineFriendRequest('${request.id}')">Decline</button>
+                </div>
+              </div>`,
           )
           .join("");
+
         lucide.createIcons();
       }
+
       async function respondToFriendRequest(requestId) {
         if (!requireSession() || !isSwetta) return;
-        let result = await supabaseClient.rpc("accept_friend_request", {
+
+        const result = await supabaseClient.rpc("accept_friend_request", {
           request_id: requestId,
         });
-        if (
-          isMissingRpc(result.error) ||
-          (result.error?.code === "23502" &&
-            /phone/i.test(result.error.message))
-        ) {
-          const request = await supabaseClient
-            .from("friend_requests")
-            .select("email")
-            .eq("id", requestId)
-            .eq("status", "pending")
-            .maybeSingle();
-          if (request.error || !request.data?.email)
-            return toast(
-              request.error?.message || "This request is no longer available",
-            );
-          const friend = await supabaseClient.from("close_friends").insert({
-            email: request.data.email,
-            label: request.data.email,
-            phone: request.data.email,
-          });
-          if (friend.error && friend.error.code !== "23505")
-            return toast(friend.error.message);
-          result = await supabaseClient
-            .from("friend_requests")
-            .update({
-              status: "accepted",
-              responded_at: new Date().toISOString(),
-            })
-            .eq("id", requestId)
-            .eq("status", "pending");
-        }
+
         if (result.error) return toast(result.error.message);
-        await loadFriendRequests();
-        await loadFriends();
-        await loadCircle();
+
+        await Promise.all([
+          loadFriendRequests(),
+          loadFriends(),
+          loadCircle(),
+          loadMessageRecipients(),
+        ]);
+
         toast("Friend accepted");
       }
+
       async function declineFriendRequest(requestId) {
         if (!requireSession() || !isSwetta) return;
         const result = await supabaseClient
@@ -1008,9 +975,12 @@
             status: "declined",
             responded_at: new Date().toISOString(),
           })
-          .eq("id", requestId);
+          .eq("id", requestId)
+          .eq("status", "pending");
+
         if (result.error) return toast(result.error.message);
-        loadFriendRequests();
+
+        await loadFriendRequests();
         toast("Request declined");
       }
       let draftStatus = {
@@ -1348,29 +1318,23 @@
       }
       async function loadMessages() {
         if (!requireSession() || !swettaId) return;
-        const recipient = isSwetta ? $("messageRecipient")?.value : "";
-        const result =
-          isSwetta && !recipient
-            ? await supabaseClient
-                .from("messages")
-                .select("*")
-                .or(`sender_id.eq.${user.id},recipient_id.eq.${user.id}`)
-                .order("created_at")
-            : isSwetta
-              ? await supabaseClient
-                  .from("messages")
-                  .select("*")
-                  .or(
-                    `and(sender_id.eq.${user.id},recipient_id.eq.${recipient}),and(sender_id.eq.${recipient},recipient_id.eq.${user.id})`,
-                  )
-                  .order("created_at")
-              : await supabaseClient
-                  .from("messages")
-                  .select("*")
-                  .or(
-                    `and(sender_id.eq.${user.id},recipient_id.eq.${swettaId}),and(sender_id.eq.${swettaId},recipient_id.eq.${user.id})`,
-                  )
-                  .order("created_at");
+
+        const recipient = isSwetta ? $("messageRecipient")?.value : swettaId;
+
+        if (!recipient) {
+          messages = [];
+          renderMessages();
+          return;
+        }
+
+        const result = await supabaseClient
+          .from("messages")
+          .select("*")
+          .or(
+            `and(sender_id.eq.${user.id},recipient_id.eq.${recipient}),and(sender_id.eq.${recipient},recipient_id.eq.${user.id})`,
+          )
+          .order("created_at");
+
         if (result.error) return toast(result.error.message);
         messages = result.data || [];
         renderMessages();
@@ -1388,25 +1352,46 @@
       }
       async function sendMessage() {
         if (!requireSession()) return;
-        const input = $("messageInput"),
-          body = input.value.trim(),
-          selectedRecipient = $("messageRecipient")?.value,
-          recipient = isSwetta
-            ? selectedRecipient ||
-              messages.filter((message) => message.sender_id !== user.id).at(-1)
-                ?.sender_id
-            : swettaId;
-        if (!body || !recipient)
-          return toast(
-            isSwetta ? "Choose a friend to message." : "Choose a message first",
-          );
+
+        const input = $("messageInput");
+        const body = input.value.trim();
+        const recipient = isSwetta ? $("messageRecipient")?.value : swettaId;
+
+        if (!recipient) return toast("Choose a friend to message.");
+        if (!body) return;
+
         const result = await supabaseClient
           .from("messages")
           .insert({ sender_id: user.id, recipient_id: recipient, body });
+
         if (result.error) return toast(result.error.message);
+
         input.value = "";
-        loadMessages();
+        await loadMessages();
       }
+
+      async function clearChat() {
+        if (!requireSession() || !swettaId) return;
+
+        const recipient = isSwetta ? $("messageRecipient")?.value : swettaId;
+        if (!recipient) return toast("Choose a friend first.");
+
+        if (!confirm("Clear this entire chat for both sides? This cannot be undone.")) return;
+
+        const result = await supabaseClient
+          .from("messages")
+          .delete()
+          .or(
+            `and(sender_id.eq.${user.id},recipient_id.eq.${recipient}),and(sender_id.eq.${recipient},recipient_id.eq.${user.id})`,
+          );
+
+        if (result.error) return toast(result.error.message);
+
+        messages = [];
+        renderMessages();
+        toast("Chat cleared for both sides");
+      }
+
       async function loadCircle() {
         if (!requireSession()) return;
         const profileResult = await supabaseClient
